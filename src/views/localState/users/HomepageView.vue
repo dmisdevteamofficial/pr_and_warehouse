@@ -3,6 +3,7 @@ import UserAppToolbar from '@/components/layout/UserAppToolbar.vue'
 import heroImg from '@/assets/2.png'
 import documentImg from '@/assets/document.png'
 import { ref, onMounted, watch, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 
@@ -13,8 +14,12 @@ import logoTDL_MVDC from '@/assets/tdl&mvdc_company.jpg'
 import logoSunny from '@/assets/sunnycompany.png'
 
 const auth = useAuthStore()
+const route = useRoute()
+const mainTab = ref('withdraw') // 'withdraw' or 'pr'
 const tabs = ref('pending')
+const prTab = ref('pending') // 'pending' or 'received'
 const cards = ref([])
+const prCards = ref([])
 const loading = ref(false)
 const showExpired = ref(false) // Toggle for expired items
 
@@ -25,6 +30,9 @@ const modalOrder    = ref(null)   // full order row
 const modalItems    = ref([])     // order_req_items joined with items
 const showPrintMenu = ref(false)
 const isOrderExpired = ref(false)
+
+// ─── Highlight Logic ──────────────────────────────────────────────────────────
+const highlightId = ref(null)
 
 // ─── Date Formatter ───────────────────────────────────────────────────────────
 const formatDate = (dateStr) => {
@@ -41,71 +49,141 @@ const fetchOrders = async () => {
   try {
     const today = new Date().toISOString().split('T')[0]
     
-    let query = supabase
-      .from('order_req')
-      .select('*, items(item_name)')
-      .eq('created_by', auth.user.id)
-      .eq('status', tabs.value)
-      .order('created_at', { ascending: false })
+    if (mainTab.value === 'withdraw') {
+      let query = supabase
+        .from('order_req')
+        .select('*, items(item_name)')
+        .eq('created_by', auth.user.id)
+        .eq('status', tabs.value)
+        .order('created_at', { ascending: false })
 
-    const { data, error } = await query
+      const { data, error } = await query
+      if (error) throw error
 
-    if (error) throw error
-
-    // Grouping by request_id
-    const grouped = data.reduce((acc, item) => {
-      // Check if item is expired
-      const isExpired = !!(item.expire_date && item.expire_date < today)
-      
-      // If filter is ON, show only expired. If filter is OFF, show only NOT expired.
-      if (showExpired.value !== isExpired) return acc
-
-      const rid = item.request_id || `single-${item.id}`
-      if (!acc[rid]) {
-        acc[rid] = {
-          ...item,
-          items_count: 0,
-          total_amount: 0,
-          item_names: [],
-          is_group_expired: isExpired
+      const grouped = data.reduce((acc, item) => {
+        const isExpired = !!(item.expire_date && item.expire_date < today)
+        if (showExpired.value !== isExpired) return acc
+        const rid = item.request_id || `single-${item.id}`
+        if (!acc[rid]) {
+          acc[rid] = { ...item, items_count: 0, total_amount: 0, item_names: [], is_group_expired: isExpired }
         }
-      }
-      acc[rid].items_count += 1
-      acc[rid].total_amount += (item.amount || 0)
-      if (item.items?.item_name) acc[rid].item_names.push(item.items.item_name)
-      // If any item in group is not expired, maybe the group isn't? 
-      // But usually they share the same request_id and expire_date.
-      return acc
-    }, {})
+        acc[rid].items_count += 1
+        acc[rid].total_amount += (item.amount || 0)
+        if (item.items?.item_name) acc[rid].item_names.push(item.items.item_name)
+        return acc
+      }, {})
 
-    cards.value = Object.values(grouped).map(group => ({
-      id:       group.id,
-      request_id: group.request_id,
-      title:    group.items_count > 1 ? `คำขอเบิกพัสดุ (${group.items_count} รายการ)` : (group.items?.item_name || 'คำขอเบิกพัสดุ'),
-      subtitle: group.items_count > 1 
-        ? group.item_names.slice(0, 2).join(', ') + (group.item_names.length > 2 ? '...' : '')
-        : `จำนวน ${group.amount} ${group.unit}`,
-      date:     formatDate(group.created_at),
-      created_at: group.created_at, // keep for sorting
-      expire:   formatDate(group.expire_date),
-      isExpired: group.expire_date && group.expire_date < today,
-      img:      group.image_url || documentImg,
-      status:   group.status,
-      items_count: group.items_count,
-      total_amount: group.total_amount
-    })).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      cards.value = Object.values(grouped).map(group => ({
+        id:       group.id,
+        request_id: group.request_id,
+        title:    group.items_count > 1 ? `คำขอเบิกพัสดุ (${group.items_count} รายการ)` : (group.items?.item_name || 'คำขอเบิกพัสดุ'),
+        subtitle: group.items_count > 1 
+          ? group.item_names.slice(0, 2).join(', ') + (group.item_names.length > 2 ? '...' : '')
+          : `จำนวน ${group.amount} ${group.unit}`,
+        date:     formatDate(group.created_at),
+        created_at: group.created_at,
+        expire:   formatDate(group.expire_date),
+        isExpired: group.expire_date && group.expire_date < today,
+        img:      group.image_url || documentImg,
+        status:   group.status,
+        items_count: group.items_count,
+        total_amount: group.total_amount
+      })).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    } else {
+      // PR Tab Logic
+      if (prTab.value === 'pending') {
+        // รอการยืนยัน: job_status เป็น NULL หรือไม่ใช่ 'รับงานแล้ว'
+        const { data, error } = await supabase
+          .from('purchasing_req')
+          .select('*, urgents(option_name)')
+          .eq('created_by', auth.user.id)
+          .or('job_status.is.null,job_status.neq.รับงานแล้ว')
+          .order('created_at', { ascending: false })
+
+        if (error) throw error
+
+        // Group by pr_number
+        const grouped = data.reduce((acc, item) => {
+          if (!acc[item.pr_number]) {
+            acc[item.pr_number] = {
+              pr_number: item.pr_number,
+              urgent: item.urgents?.option_name,
+              created_at: item.created_at,
+              status: item.job_status || 'รอการยืนยัน',
+              items: [],
+              isExpanded: false
+            }
+          }
+          acc[item.pr_number].items.push(item)
+          return acc
+        }, {})
+
+        prCards.value = Object.values(grouped).map(group => ({
+          ...group,
+          title: `PR: ${group.pr_number}`,
+          subtitle: group.items.length > 1 ? `${group.items[0].details} และอื่นๆ อีก ${group.items.length - 1} รายการ` : group.items[0].details,
+          date: formatDate(group.created_at)
+        }))
+      } else {
+        // รับงานแล้ว: Fetch from purchasing_order
+        const { data, error } = await supabase
+          .from('purchasing_order')
+          .select(`
+            *,
+            purchasing_req!inner(pr_number, details, amount_req, unit, created_by, urgents(option_name))
+          `)
+          .eq('purchasing_req.created_by', auth.user.id)
+          .order('created_at', { ascending: false })
+
+        if (error) throw error
+
+        // Group by pr_number
+        const grouped = data.reduce((acc, item) => {
+          const pr_no = item.purchasing_req?.pr_number
+          if (!acc[pr_no]) {
+            acc[pr_no] = {
+              pr_number: pr_no,
+              lao_po_number: item.lao_po_number,
+              status_purchase: item.status_purchase,
+              urgent: item.purchasing_req?.urgents?.option_name,
+              created_at: item.created_at,
+              status: item.status_purchase || 'รับงานแล้ว',
+              items: [],
+              isExpanded: false
+            }
+          }
+          acc[pr_no].items.push(item)
+          return acc
+        }, {})
+
+        prCards.value = Object.values(grouped).map(group => ({
+          ...group,
+          title: `PR: ${group.pr_number}`,
+          subtitle: group.items.length > 1 ? `${group.items[0].purchasing_req?.details} และอื่นๆ อีก ${group.items.length - 1} รายการ` : group.items[0].purchasing_req?.details,
+          date: formatDate(group.created_at)
+        }))
+      }
+    }
   } catch (err) {
-    console.error('Error fetching orders:', err.message)
+    console.error('Error fetching data:', err.message)
   } finally {
     loading.value = false
   }
 }
 
 onMounted(() => {
-  console.log('HomepageView loaded at ' + new Date().toISOString())
+  // Check for query parameters from notifications
+  if (route.query.highlight) {
+    highlightId.value = route.query.highlight
+    // If it's a notification from a PR, switch to PR tab
+    // We can't know for sure if it's PR just from ID, but we can check if there are other params
+    // or just assume for now as per user request
+    mainTab.value = 'pr'
+    prTab.value = 'received' // Most likely received/approved if notified
+  }
   fetchOrders()
 })
-watch([tabs, showExpired], () => fetchOrders())
+watch([mainTab, tabs, prTab, showExpired], () => fetchOrders())
 
 // ─── Open Modal ───────────────────────────────────────────────────────────────
 async function openModal(card) {
@@ -225,7 +303,9 @@ const getStatusLabel = (status) => ({
   pending:   'รอดำเนินการ',
   approved:  'อนุมัติแล้ว',
   rejected:  'ปฏิเสธแล้ว',
-  completed: 'สำเร็จแล้ว'
+  completed: 'สำเร็จแล้ว',
+  'รอการยืนยัน': 'รอการยืนยัน',
+  'รับงานแล้ว': 'รับงานแล้ว'
 }[status] || status)
 
 // ─── Purpose Options ─────────────────────────────────────────────────────────
@@ -273,9 +353,12 @@ const totalAmount = () => modalItems.value.reduce((sum, item) => sum + (Number(i
                style="background: var(--color-bg-card)">
         <img :src="heroImg" alt="cover" class="hero-img">
         <div class="hero-overlay"></div>
-        <div class="absolute inset-0 flex items-bottom justify-center animate-pulse">
+        <div class="absolute inset-0 flex items-center justify-center gap-4 mt-12 animate-pulse">
           <router-link to="/u/create" class="hero-btn">
             + สร้างคำขอเบิก
+          </router-link>
+          <router-link to="/u/create-pr" class="hero-btn !bg-blue-600 !text-white">
+            + สร้างคำขอ PR
           </router-link>
         </div>
       </section>
@@ -283,10 +366,28 @@ const totalAmount = () => modalItems.value.reduce((sum, item) => sum + (Number(i
       <!-- Content Section -->
       <section class="max-w-screen-lg mx-auto px-4 md:px-6 mt-6 pb-8">
 
-        <div class="section-title">คำขอของฉัน</div>
+        <!-- Main Tabs -->
+        <div class="flex items-center gap-2 mb-6 border-b border-gray-100 dark:border-gray-800">
+          <button @click="mainTab = 'withdraw'" 
+                  class="pb-3 px-4 text-[15px] font-bold transition-all relative"
+                  :class="mainTab === 'withdraw' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'">
+            รายการคำขอเบิกพัสดุ
+            <div v-if="mainTab === 'withdraw'" class="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600 rounded-full"></div>
+          </button>
+          <button @click="mainTab = 'pr'" 
+                  class="pb-3 px-4 text-[15px] font-bold transition-all relative"
+                  :class="mainTab === 'pr' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'">
+            รายการเปิด PR
+            <div v-if="mainTab === 'pr'" class="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600 rounded-full"></div>
+          </button>
+        </div>
 
-        <!-- Tab Toggle Switch -->
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+        <div class="section-title mb-4">
+          {{ mainTab === 'withdraw' ? 'คำขอเบิกพัสดุของฉัน' : 'คำขอ PR ของฉัน' }}
+        </div>
+
+        <!-- Tab Toggle Switch (Withdraw) -->
+        <div v-if="mainTab === 'withdraw'" class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
           <div class="tab-switch-wrap !mb-0">
             <div class="tab-switch">
               <div class="tab-switch-track" :class="tabs === 'completed' ? 'track-right' : 'track-left'"></div>
@@ -303,11 +404,29 @@ const totalAmount = () => modalItems.value.reduce((sum, item) => sum + (Number(i
 
           <!-- Expired Filter Toggle -->
           <button @click="showExpired = !showExpired" 
-                  class="flex items-center gap-2 px-4 py-2 rounded-xl border transition-all text-[13px] font-medium"
-                  :class="showExpired ? 'bg-red-50 border-red-200 text-red-600 dark:bg-red-900/20 dark:border-red-800' : 'bg-white border-gray-200 text-gray-600 dark:bg-slate-900 dark:border-slate-700 dark:text-gray-400'">
-            <i class="fa-solid" :class="showExpired ? 'fa-eye' : 'fa-eye-slash'"></i>
-            แสดงรายการที่หมดอายุ
+                  class="flex items-center gap-2 px-4 py-2 rounded-xl border transition-all"
+                  :class="showExpired ? 'bg-red-50 border-red-200 text-red-600' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'"
+                  style="font-size: 13px; font-weight: 600;">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+            {{ showExpired ? 'แสดงรายการที่ยังไม่หมดอายุ' : 'แสดงรายการที่หมดอายุแล้ว' }}
           </button>
+        </div>
+
+        <!-- Tab Toggle Switch (PR) -->
+        <div v-if="mainTab === 'pr'" class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+          <div class="tab-switch-wrap !mb-0">
+            <div class="tab-switch">
+              <div class="tab-switch-track" :class="prTab === 'received' ? 'track-right' : 'track-left'"></div>
+              <button @click="prTab='pending'" class="tab-switch-btn" :class="{ 'tab-active': prTab==='pending' }">
+                <span class="tab-dot dot-warning"></span>
+                รอการยืนยัน
+              </button>
+              <button @click="prTab='received'" class="tab-switch-btn" :class="{ 'tab-active': prTab==='received' }">
+                <span class="tab-dot dot-success"></span>
+                รับงานแล้ว
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- Loading -->
@@ -316,16 +435,22 @@ const totalAmount = () => modalItems.value.reduce((sum, item) => sum + (Number(i
         </div>
 
         <!-- Empty -->
-        <div v-else-if="cards.length === 0" class="flex flex-col items-center justify-center py-20 text-gray-400">
+        <div v-else-if="(mainTab === 'withdraw' && cards.length === 0) || (mainTab === 'pr' && prCards.length === 0)" 
+             class="flex flex-col items-center justify-center py-20 text-gray-400 bg-white dark:bg-slate-900 rounded-3xl border border-dashed border-gray-200 dark:border-slate-800">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mb-4 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
           </svg>
-          <span v-if="showExpired">ไม่มีรายการที่หมดอายุ</span>
-          <span v-else>ไม่มีรายการ{{ tabs === 'pending' ? 'รอการอนุมัติ' : 'ที่สำเร็จแล้ว' }}</span>
+          <span v-if="mainTab === 'withdraw'">
+            <span v-if="showExpired">ไม่มีรายการที่หมดอายุ</span>
+            <span v-else>ไม่มีรายการ{{ tabs === 'pending' ? 'รอการอนุมัติ' : 'ที่สำเร็จแล้ว' }}</span>
+          </span>
+          <span v-else>
+            ไม่มีรายการ{{ prTab === 'pending' ? 'รอการยืนยัน' : 'รับงานแล้ว' }}
+          </span>
         </div>
 
-        <!-- Cards Grid -->
-        <div v-else class="grid grid-cols-1 sm:grid-cols-3 gap-4 md:gap-5">
+        <!-- Cards Grid (Withdraw) -->
+        <div v-else-if="mainTab === 'withdraw'" class="grid grid-cols-1 sm:grid-cols-3 gap-4 md:gap-5">
           <div v-for="c in cards" :key="c.id" class="req-card" 
                :class="{ 'opacity-75 grayscale-[0.5]': c.isExpired }"
                @click="openModal(c)">
@@ -333,7 +458,6 @@ const totalAmount = () => modalItems.value.reduce((sum, item) => sum + (Number(i
               <img :src="c.img" class="card-img" alt="">
               <div class="card-img-overlay"></div>
               <span class="card-date-badge">{{ c.date }}</span>
-              <!-- Expired Badge on Card -->
               <div v-if="c.isExpired" class="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[2px] z-10">
                 <span class="px-3 py-1 rounded-lg bg-red-600 text-white text-[12px] font-bold shadow-lg">หมดอายุแล้ว</span>
               </div>
@@ -349,6 +473,89 @@ const totalAmount = () => modalItems.value.reduce((sum, item) => sum + (Number(i
               <div class="card-footer">
                 <span class="card-expire-label">หมดอายุ</span>
                 <span class="card-expire-date rounded-lg bg-red-100 text-red-600 dark:bg-red-800/50 dark:text-red-500 px-2 text-[11px]">{{ c.expire }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cards List (PR) - Grouped View -->
+        <div v-else-if="mainTab === 'pr'" class="flex flex-col gap-4">
+          <div v-for="c in prCards" :key="c.pr_number" 
+               class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden transition-all">
+            
+            <!-- PR Group Header (Long Card) -->
+            <div @click="c.isExpanded = !c.isExpanded" 
+                 class="flex flex-col md:flex-row md:items-center gap-4 p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800/50 transition-colors">
+              
+              <!-- Icon/Badge -->
+              <div class="flex items-center gap-4">
+                <div class="w-12 h-12 rounded-xl bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center border border-blue-100 dark:border-blue-800/30">
+                  <i class="fa-solid fa-file-invoice text-xl text-blue-500"></i>
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h3 class="font-bold text-gray-800 dark:text-gray-100 text-[16px]">{{ c.title }}</h3>
+                    <div v-if="c.urgent" class="px-2 py-0.5 rounded bg-red-500 text-white text-[10px] font-bold flex items-center gap-1">
+                      <i class="fa-solid fa-bolt"></i>
+                      {{ c.urgent }}
+                    </div>
+                  </div>
+                  <div class="text-[11px] text-gray-400 dark:text-gray-500 flex items-center gap-2">
+                    <i class="fa-regular fa-calendar"></i>
+                    {{ c.date }}
+                    <span class="mx-1">•</span>
+                    <span>{{ c.items.length }} รายการ</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Details & Status -->
+              <div class="flex-grow min-w-0 md:px-4">
+                <p class="text-gray-500 dark:text-gray-400 text-sm truncate">{{ c.subtitle }}</p>
+              </div>
+
+              <!-- Status & Actions -->
+              <div class="flex items-center justify-between md:justify-end gap-4 mt-2 md:mt-0">
+                <div class="flex flex-col items-end gap-1">
+                  <span class="card-status-badge !m-0" :class="prTab === 'received' ? 'status-completed' : 'bg-orange-100 text-orange-600'">
+                    {{ c.status }}
+                  </span>
+                  <div v-if="c.lao_po_number" class="text-[10px] font-bold text-blue-600 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded">
+                    PO: {{ c.lao_po_number }}
+                  </div>
+                </div>
+                <i class="fa-solid fa-chevron-down text-gray-400 transition-transform duration-300" 
+                   :class="{ 'rotate-180': c.isExpanded }"></i>
+              </div>
+            </div>
+
+            <!-- PR Items List (Accordion Content) -->
+            <div v-show="c.isExpanded" class="border-t border-gray-50 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-950/30">
+              <div class="p-4 space-y-3">
+                <div v-for="(item, idx) in c.items" :key="idx" 
+                     class="flex items-start gap-4 p-3 rounded-xl bg-white dark:bg-slate-900 border border-gray-100 dark:border-slate-800 shadow-sm">
+                  <div class="w-8 h-8 rounded-lg bg-gray-100 dark:bg-slate-800 flex items-center justify-center text-[12px] font-bold text-gray-400">
+                    {{ idx + 1 }}
+                  </div>
+                  <div class="flex-grow min-w-0">
+                    <div class="flex justify-between items-start mb-1">
+                      <h4 class="font-bold text-gray-800 dark:text-gray-100 text-sm">{{ prTab === 'received' ? item.purchasing_req?.details : item.details }}</h4>
+                      <div class="text-[12px] font-bold text-blue-600">
+                        {{ prTab === 'received' ? item.purchasing_req?.amount_req : item.amount_req }} {{ prTab === 'received' ? item.purchasing_req?.unit : item.unit }}
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-4 text-[11px] text-gray-400">
+                      <span v-if="item.air_code || item.purchasing_req?.air_code">
+                        <i class="fa-solid fa-tag mr-1"></i>
+                        {{ item.air_code || item.purchasing_req?.air_code }}
+                      </span>
+                      <span v-if="prTab === 'received' && item.status_purchase">
+                        <i class="fa-solid fa-truck-ramp-box mr-1"></i>
+                        {{ item.status_purchase }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -614,7 +821,6 @@ a { text-decoration: none; }
   background: linear-gradient(160deg, rgba(15,23,42,0.35) 0%, rgba(15,23,42,0.55) 100%);
 }
 .hero-btn {
-  position: absolute; top: 60%;
   padding: 10px 28px; border-radius: 9999px;
   background: rgba(255,255,255,0.92); backdrop-filter: blur(8px);
   font-size: 14px; font-weight: 600; color: #0F172A;

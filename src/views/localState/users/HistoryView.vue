@@ -1,6 +1,6 @@
 <script setup>
 import UserAppToolbar from '@/components/layout/UserAppToolbar.vue'
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, computed } from 'vue'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 
@@ -13,6 +13,20 @@ import logoSunny from '@/assets/sunnycompany.png'
 const auth = useAuthStore()
 const loading = ref(false)
 const history = ref([])
+const prOrders = ref([])
+const poOrders = ref([])
+const searchText = ref('')
+const mainTab = ref('withdraw') // 'withdraw' or 'pr'
+const prTab = ref('pending') // 'pending' or 'received'
+const expandedPrs = ref(new Set()) // Track expanded PR numbers
+
+function togglePrExpansion(prNumber) {
+  if (expandedPrs.value.has(prNumber)) {
+    expandedPrs.value.delete(prNumber)
+  } else {
+    expandedPrs.value.add(prNumber)
+  }
+}
 
 // ─── View Control ─────────────────────────────────────────────────────────────
 const isModalOpen   = ref(false)
@@ -32,17 +46,38 @@ const fetchHistory = async () => {
   if (!auth.user?.id) return
   loading.value = true
   try {
-    const { data, error } = await supabase
-      .from('order_req')
-      .select('*, items(item_name)')
-      .eq('created_by', auth.user.id)
-      .eq('status', 'completed')
-      .order('updated_at', { ascending: false })
+    const [
+      { data: ordersData, error: ordersError },
+      { data: prData, error: prError },
+      { data: poData, error: poError }
+    ] = await Promise.all([
+      supabase
+        .from('order_req')
+        .select('*, items(item_name)')
+        .eq('created_by', auth.user.id)
+        .eq('status', 'completed')
+        .order('updated_at', { ascending: false }),
+      supabase
+        .from('purchasing_req')
+        .select('*, urgents(option_name)')
+        .eq('created_by', auth.user.id)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('purchasing_order')
+        .select(`
+          *,
+          purchasing_req!inner(pr_number, details, amount_req, unit, created_by, urgents(option_name))
+        `)
+        .eq('purchasing_req.created_by', auth.user.id)
+        .order('created_at', { ascending: false })
+    ])
     
-    if (error) throw error
+    if (ordersError) throw ordersError
+    if (prError) throw prError
+    if (poError) throw poError
 
-    // Grouping by request_id
-    const grouped = data.reduce((acc, item) => {
+    // Grouping by request_id (Withdraw)
+    const groupedWithdraw = (ordersData || []).reduce((acc, item) => {
       const rid = item.request_id || `single-${item.id}`
       if (!acc[rid]) {
         acc[rid] = {
@@ -56,19 +91,93 @@ const fetchHistory = async () => {
       return acc
     }, {})
 
-    history.value = Object.values(grouped).map(group => ({
+    history.value = Object.values(groupedWithdraw).map(group => ({
       ...group,
       title: group.items_count > 1 ? `ใบเบิกพัสดุ #${group.request_id} (${group.items_count} รายการ)` : (group.items?.item_name || 'ใบเบิกพัสดุ'),
       subtitle: group.items_count > 1 
         ? group.item_names.slice(0, 2).join(', ') + (group.item_names.length > 2 ? '...' : '')
         : `จำนวน ${group.amount} ${group.unit}`
     }))
+
+    prOrders.value = prData || []
+    poOrders.value = poData || []
   } catch (err) {
     console.error('Error fetching history:', err.message)
   } finally {
     loading.value = false
   }
 }
+
+const prHistoryGroups = computed(() => {
+  if (prTab.value === 'pending') {
+    const grouped = prOrders.value.reduce((acc, item) => {
+      // กรองเฉพาะที่ยังไม่ได้รับงาน (pending)
+      if (item.job_status === 'รับงานแล้ว') return acc
+
+      if (!acc[item.pr_number]) {
+        acc[item.pr_number] = {
+          pr_number: item.pr_number,
+          urgent: item.urgents?.option_name,
+          created_at: item.created_at,
+          status: item.job_status || 'รอการยืนยัน',
+          items: []
+        }
+      }
+      acc[item.pr_number].items.push(item)
+      return acc
+    }, {})
+    return Object.values(grouped).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  } else {
+    const grouped = poOrders.value.reduce((acc, item) => {
+      const pr_no = item.purchasing_req?.pr_number
+      if (!acc[pr_no]) {
+        acc[pr_no] = {
+          pr_number: pr_no,
+          lao_po_number: item.lao_po_number,
+          status_purchase: item.status_purchase,
+          urgent: item.purchasing_req?.urgents?.option_name,
+          created_at: item.created_at,
+          status: item.status_purchase || 'รับงานแล้ว',
+          items: []
+        }
+      }
+      acc[pr_no].items.push(item)
+      return acc
+    }, {})
+    return Object.values(grouped).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  }
+})
+
+const filteredHistoryGroups = computed(() => {
+  const key = searchText.value.trim().toLowerCase()
+  if (mainTab.value === 'withdraw') {
+    if (!key) return history.value
+    return history.value.filter((item) => {
+      const title = String(item.title || '').toLowerCase()
+      const subtitle = String(item.subtitle || '').toLowerCase()
+      const requestId = String(item.request_id || '').toLowerCase()
+      const mrNumber = String(item.mr_number || '').toLowerCase()
+      return title.includes(key) || subtitle.includes(key) || requestId.includes(key) || mrNumber.includes(key)
+    })
+  } else {
+    if (!key) return prHistoryGroups.value
+    return prHistoryGroups.value.filter((group) => {
+      const prNumber = String(group.pr_number || '').toLowerCase()
+      const poNumber = String(group.lao_po_number || '').toLowerCase()
+      const itemText = group.items
+        .map((item) => {
+          if (prTab.value === 'pending') {
+            return `${item.details} ${item.unit}`
+          } else {
+            return `${item.purchasing_req?.details} ${item.purchasing_req?.unit} ${item.lao_po_number}`
+          }
+        })
+        .join(' ')
+        .toLowerCase()
+      return prNumber.includes(key) || poNumber.includes(key) || itemText.includes(key)
+    })
+  }
+})
 
 // ─── Open Modal ───────────────────────────────────────────────────────────────
 async function openModal(item) {
@@ -206,35 +315,154 @@ onMounted(fetchHistory)
     <!-- ── LIST VIEW ── -->
     <div v-if="!isModalOpen">
       <section class="max-w-screen-lg mx-auto px-4 md:px-6 mt-6 pb-8">
-        <div class="section-title text-[20px] font-bold mb-4">ประวัติการเบิก</div>
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <h2 class="text-2xl font-bold text-gray-800 dark:text-gray-100">ประวัติการใช้งาน</h2>
+          
+          <!-- Main Tabs -->
+          <div class="flex p-1 bg-gray-100 dark:bg-slate-800 rounded-xl w-fit">
+            <button 
+              @click="mainTab = 'withdraw'"
+              class="px-4 py-2 rounded-lg text-sm font-bold transition-all"
+              :class="mainTab === 'withdraw' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+            >
+              ประวัติการเบิก
+            </button>
+            <button 
+              @click="mainTab = 'pr'"
+              class="px-4 py-2 rounded-lg text-sm font-bold transition-all"
+              :class="mainTab === 'pr' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+            >
+              รายการขอซื้อ
+            </button>
+          </div>
+        </div>
+
+        <!-- Sub Tabs for PR -->
+        <div v-if="mainTab === 'pr'" class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div class="tab-switch-wrap !mb-0">
+            <div class="tab-switch">
+              <div class="tab-switch-track" :class="prTab === 'received' ? 'track-right' : 'track-left'"></div>
+              <button @click="prTab='pending'" class="tab-switch-btn" :class="{ 'tab-active': prTab==='pending' }">
+                <span class="tab-dot dot-warning"></span>
+                รอการยืนยัน
+              </button>
+              <button @click="prTab='received'" class="tab-switch-btn" :class="{ 'tab-active': prTab==='received' }">
+                <span class="tab-dot dot-success"></span>
+                รับงานแล้ว
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Search Box -->
+        <div class="relative mb-6">
+          <i class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"></i>
+          <input 
+            v-model="searchText"
+            type="text" 
+            :placeholder="mainTab === 'withdraw' ? 'ค้นหา Request ID, MR, ชื่อสินค้า...' : (prTab === 'pending' ? 'ค้นหาเลขที่ PR หรือรายละเอียดสินค้า...' : 'ค้นหาเลขที่ PR, PO หรือรายละเอียดสินค้า...')"
+            class="w-full pl-11 pr-4 py-3 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all"
+          >
+        </div>
         
         <div v-if="loading" class="flex justify-center items-center py-20">
           <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
         </div>
 
-        <div v-else-if="history.length === 0" class="flex flex-col items-center justify-center py-20 text-gray-400">
+        <div v-else-if="filteredHistoryGroups.length === 0" class="flex flex-col items-center justify-center py-20 text-gray-400">
           <i class="fa-solid fa-clock-rotate-left text-[48px] mb-4 opacity-20"></i>
-          <span>ไม่มีประวัติการเบิก</span>
+          <span>{{ mainTab === 'withdraw' ? 'ไม่มีประวัติการเบิก' : 'ไม่มีรายการขอซื้อ' }}</span>
         </div>
 
         <div v-else class="grid grid-cols-1 gap-4">
-          <div v-for="item in history" :key="item.id" 
-               @click="openModal(item)"
-               class="bg-white dark:bg-slate-900 rounded-xl p-4 border border-gray-200 dark:border-slate-700 shadow-sm flex items-center justify-between cursor-pointer hover:border-blue-500 transition-colors">
-            <div class="flex items-center gap-4">
-              <div class="w-12 h-12 rounded-lg bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center">
-                <i class="fa-solid fa-box text-blue-600 dark:text-blue-400"></i>
+          <template v-if="mainTab === 'withdraw'">
+            <div v-for="item in filteredHistoryGroups" :key="item.id" 
+                 @click="openModal(item)"
+                 class="bg-white dark:bg-slate-900 rounded-xl p-4 border border-gray-200 dark:border-slate-700 shadow-sm flex items-center justify-between cursor-pointer hover:border-blue-500 transition-colors">
+              <div class="flex items-center gap-4">
+                <div class="w-12 h-12 rounded-lg bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center">
+                  <i class="fa-solid fa-box text-blue-600 dark:text-blue-400"></i>
+                </div>
+                <div>
+                  <div class="text-[14px] font-bold text-gray-800 dark:text-gray-100">{{ item.title }}</div>
+                  <div class="text-[12px] text-gray-500">{{ item.subtitle }}</div>
+                </div>
               </div>
-              <div>
-                <div class="text-[14px] font-bold text-gray-800 dark:text-gray-100">{{ item.title }}</div>
-                <div class="text-[12px] text-gray-500">{{ item.subtitle }}</div>
+              <div class="text-right">
+                <div class="text-[12px] text-gray-400">เสร็จสิ้นเมื่อ</div>
+                <div class="text-[13px] font-medium text-gray-700 dark:text-gray-200">{{ formatDate(item.updated_at) }}</div>
               </div>
             </div>
-            <div class="text-right">
-              <div class="text-[12px] text-gray-400">เสร็จสิ้นเมื่อ</div>
-              <div class="text-[13px] font-medium text-gray-700 dark:text-gray-200">{{ formatDate(item.updated_at) }}</div>
+          </template>
+
+          <template v-else>
+            <!-- PR History List -->
+            <div v-for="group in filteredHistoryGroups" :key="group.pr_number" 
+                 class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm overflow-hidden">
+              <div @click="togglePrExpansion(group.pr_number)"
+                   class="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800/50 transition-colors">
+                <div class="flex items-center gap-4">
+                  <div class="w-12 h-12 rounded-lg bg-orange-100 dark:bg-orange-900/40 flex items-center justify-center">
+                    <i class="fa-solid fa-cart-shopping text-orange-600 dark:text-orange-400"></i>
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="text-[14px] font-bold text-gray-800 dark:text-gray-100">PR: {{ group.pr_number }}</span>
+                      <span v-if="group.urgent" class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400 uppercase">
+                        {{ group.urgent }}
+                      </span>
+                    </div>
+                    <div class="text-[12px] text-gray-500">
+                      {{ group.items.length }} รายการ • {{ formatDate(group.created_at) }}
+                    </div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-4">
+                  <div class="text-right hidden sm:block">
+                    <div class="text-[11px] text-gray-400 uppercase font-bold mb-1">Status</div>
+                    <div class="text-[12px] font-bold" 
+                         :class="prTab === 'pending' ? 'text-orange-500' : 'text-green-500'">
+                      {{ group.status }}
+                    </div>
+                  </div>
+                  <i class="fa-solid fa-chevron-down text-gray-400 transition-transform duration-300"
+                     :class="{ 'rotate-180': expandedPrs.has(group.pr_number) }"></i>
+                </div>
+              </div>
+
+              <!-- PR Items List (Accordion Content) -->
+              <div v-show="expandedPrs.has(group.pr_number)" class="bg-gray-50/50 dark:bg-slate-950/30 border-t border-gray-100 dark:border-gray-800">
+                <div class="p-4 space-y-2">
+                  <div v-for="(item, idx) in group.items" :key="idx" 
+                       class="flex items-start gap-3 p-3 rounded-xl bg-white dark:bg-slate-900 border border-gray-100 dark:border-slate-800 shadow-sm">
+                    <div class="w-7 h-7 rounded-lg bg-gray-100 dark:bg-slate-800 flex items-center justify-center text-[11px] font-bold text-gray-400 shrink-0">
+                      {{ idx + 1 }}
+                    </div>
+                    <div class="flex-grow min-w-0">
+                      <div class="flex justify-between items-start gap-4">
+                        <div class="min-w-0">
+                          <h4 class="font-bold text-gray-800 dark:text-gray-100 text-[13px] mb-0.5 truncate">
+                            {{ prTab === 'pending' ? item.details : item.purchasing_req?.details }}
+                          </h4>
+                          <p v-if="prTab === 'received' && item.lao_po_number" class="text-[11px] text-blue-600 font-bold mb-1">
+                            PO: {{ item.lao_po_number }}
+                          </p>
+                          <p v-if="item.air_code || (prTab === 'received' && item.purchasing_req?.air_code)" class="text-[11px] text-blue-500 font-medium">
+                            <i class="fa-solid fa-plane-arrival mr-1"></i>
+                            {{ prTab === 'pending' ? item.air_code : item.purchasing_req?.air_code }}
+                          </p>
+                        </div>
+                        <div class="text-[13px] font-bold text-blue-600 whitespace-nowrap">
+                          {{ prTab === 'pending' ? item.amount_req : item.purchasing_req?.amount_req }} 
+                          {{ prTab === 'pending' ? item.unit : item.purchasing_req?.unit }}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
       </section>
     </div>
@@ -477,6 +705,18 @@ onMounted(fetchHistory)
 </template>
 
 <style scoped>
+/* ── Tabs ── */
+.tab-switch-wrap { margin-bottom: 18px; }
+.tab-switch { position: relative; display: inline-flex; align-items: center; background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 9999px; padding: 3px; gap: 0; }
+.tab-switch-track { position: absolute; top: 3px; bottom: 3px; border-radius: 9999px; background: var(--color-bg-card); box-shadow: 0 1px 4px rgba(0,0,0,0.10); border: 1px solid var(--color-border); transition: left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1); pointer-events: none; z-index: 0; }
+.tab-switch-btn { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px; padding: 7px 18px; border-radius: 9999px; border: none; background: transparent; font-size: 13px; font-weight: 500; color: var(--color-text-muted); cursor: pointer; transition: color 0.2s; white-space: nowrap; }
+.tab-switch-btn.tab-active { color: var(--color-text-primary); font-weight: 600; }
+.tab-switch-track.track-left { left: 3px; width: calc(50% - 3px); }
+.tab-switch-track.track-right { left: calc(50%); width: calc(50% - 3px); }
+.tab-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.dot-warning { background: #F59E0B; }
+.dot-success { background: #16A34A; }
+
 .section-title {
   color: var(--color-text-primary);
 }

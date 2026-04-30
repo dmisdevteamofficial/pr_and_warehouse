@@ -13,6 +13,7 @@ import UserLogsLisView from '@/views/userLogsLisView.vue'
 import ImportMoreListView from '@/views/ImportMoreListView.vue'
 import HomepageView from '@/views/localState/users/HomepageView.vue'
 import CreateOrderView from '@/views/localState/users/CreateOrderView.vue'
+import CreatePRView from '@/views/localState/users/CreatePRView.vue'
 import HistoryView from '@/views/localState/users/HistoryView.vue'
 import WithdrawFormView from '@/views/localState/users/WithdrawFormView.vue'
 
@@ -33,6 +34,7 @@ const routes = [
   { path: '/imports', component: ImportMoreListView, meta: { requiresAuth: true, isAdmin: true } },
   { path: '/u/home', component: HomepageView, meta: { requiresAuth: true } },
   { path: '/u/create', component: CreateOrderView, meta: { requiresAuth: true } },
+  { path: '/u/create-pr', component: CreatePRView, meta: { requiresAuth: true } },
   { path: '/u/history', component: HistoryView, meta: { requiresAuth: true } },
   { path: '/u/withdraw', component: WithdrawFormView, meta: { requiresAuth: true } },
 ]

@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import ProfileDropdown from '@/components/ui/ProfileDropdown.vue'
+import NotificationDropdown from '@/components/ui/NotificationDropdown.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import ProfileEditSidebar from '@/components/layout/ProfileEditSidebar.vue'
 
@@ -78,13 +79,19 @@ onMounted(() => {
              class="px-4 py-2 rounded-full text-[13px] font-medium transition-colors"
              :class="currentPath === '/u/create' ? 'bg-blue-600 text-white' : 'hover:bg-gray-100 dark:hover:bg-slate-700'"
              :style="currentPath === '/u/create' ? '' : 'color: var(--color-text-secondary)'">
-            Create
+            เบิกพัสดุ
+          </router-link>
+          <router-link to="/u/create-pr"
+             class="px-4 py-2 rounded-full text-[13px] font-medium transition-colors"
+             :class="currentPath === '/u/create-pr' ? 'bg-blue-600 text-white' : 'hover:bg-gray-100 dark:hover:bg-slate-700'"
+             :style="currentPath === '/u/create-pr' ? '' : 'color: var(--color-text-secondary)'">
+            คำขอ PR
           </router-link>
           <router-link to="/u/history"
              class="px-4 py-2 rounded-full text-[13px] font-medium transition-colors"
              :class="currentPath === '/u/history' ? 'bg-blue-600 text-white' : 'hover:bg-gray-100 dark:hover:bg-slate-700'"
              :style="currentPath === '/u/history' ? '' : 'color: var(--color-text-secondary)'">
-            History
+            ประวัติการดำเนินการ
           </router-link>
         </nav>
         <div class="flex items-center gap-1 md:gap-2">
@@ -93,6 +100,8 @@ onMounted(() => {
                   style="color: var(--color-text-secondary)">
             <i :class="isDark ? 'fa-solid fa-sun' : 'fa-solid fa-moon'" class="text-[16px]"></i>
           </button>
+
+          <NotificationDropdown />
 
           <ProfileDropdown />
         </div>
@@ -149,6 +158,15 @@ onMounted(() => {
                            :style="currentPath === '/u/create' ? '' : 'color: var(--color-text-secondary)'">
                 <i class="fa-solid fa-file-pen"></i>
                 สร้างใบเบิกพัสดุ
+              </router-link>
+            </li>
+            <li>
+              <router-link to="/u/create-pr" @click="closeMenu"
+                           class="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] transition-colors"
+                           :class="currentPath === '/u/create-pr' ? 'bg-blue-600 text-white hover:bg-blue-700' : 'hover:bg-gray-100 dark:hover:bg-slate-700 text-[var(--color-text-secondary)]'"
+                           :style="currentPath === '/u/create-pr' ? '' : 'color: var(--color-text-secondary)'">
+                <i class="fa-solid fa-file-invoice"></i>
+                สร้างใบคำขอสั่งซื้อ (PR)
               </router-link>
             </li>
             <li>
