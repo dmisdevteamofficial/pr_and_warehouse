@@ -19,6 +19,7 @@ import CreatePRView from '@/views/localState/users/CreatePRView.vue'
 import HistoryView from '@/views/localState/users/HistoryView.vue'
 import WithdrawFormView from '@/views/localState/users/WithdrawFormView.vue'
 import PrAdminView from '@/views/PrSystem/AdminView.vue'
+import AdminCookieView from '@/views/PrSystem/AdminCookieView.vue'
 // PrSystem Views
 import SystemadminLisView from '@/views/PrSystem/Views/SystemadminLisView.vue'
 import AdminLogsView from '@/views/PrSystem/Views/adminLogsView.vue'
@@ -48,6 +49,7 @@ const routes = [
   // PrSystem Routes
   { path: '/pr/system-admins', component: SystemadminLisView, meta: { requiresAuth: true, isSuperAdmin: true, isAdmin: true } },
   { path: '/pr/logs-usage', component: AdminLogsView, meta: { requiresAuth: true, isSuperAdmin: true, isAdmin: true } },
+  { path: '/admin/cookie', component: AdminCookieView, meta: { requiresAuth: true, isAdmin: true } },
 ]
 
 const router = createRouter({

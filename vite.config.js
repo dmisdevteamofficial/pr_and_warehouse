@@ -112,6 +112,24 @@ export default defineConfig(async ({ mode }) => {
               proxyReq.setHeader('Referer', 'https://thaidrill.trcloud.co/application/')
             })
           }
+        },
+        '/api/trcloud': {
+          target: 'https://thaidrill.trcloud.co/application',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api\/trcloud/, ''),
+          configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.removeHeader('cookie')
+              const cookieToSend = trcloudCookie
+              if (cookieToSend) {
+                proxyReq.setHeader('Cookie', cookieToSend)
+              }
+              proxyReq.setHeader('X-Requested-With', 'XMLHttpRequest')
+              proxyReq.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+              proxyReq.setHeader('Origin', 'https://thaidrill.trcloud.co')
+              proxyReq.setHeader('Referer', 'https://thaidrill.trcloud.co/application/')
+            })
+          }
         }
       }
     }

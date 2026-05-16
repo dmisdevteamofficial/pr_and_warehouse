@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { trcloudProxyExtraHeaders } from '@/utils/trcloudSession'
 
 export const useTrcloudStore = defineStore('trcloud', () => {
   const prRows = ref([])
@@ -27,7 +26,6 @@ export const useTrcloudStore = defineStore('trcloud', () => {
   const loading = ref(false)
   const lastFetched = ref(null)
   
-  // Default date range is rolling 4 months (current month + previous 3 months).
   const getInitialDates = () => {
     const formatLocalYmd = (d) => {
       const yyyy = String(d.getFullYear())
@@ -37,7 +35,7 @@ export const useTrcloudStore = defineStore('trcloud', () => {
     }
 
     const now = new Date()
-    const to = formatLocalYmd(now) // Today's date
+    const to = formatLocalYmd(now)
     const fromDate = new Date(now.getFullYear(), now.getMonth() - 3, 1)
     const from = formatLocalYmd(fromDate)
     
@@ -93,7 +91,6 @@ export const useTrcloudStore = defineStore('trcloud', () => {
         return
       }
 
-      // Keep logs safe but useful for diagnosing stale/invalid env values.
       console.log(`Fetch ${type} using Company ID: ${companyId}, passkey length: ${passkey.length}`)
       
       let endpoint = ''
@@ -101,22 +98,22 @@ export const useTrcloudStore = defineStore('trcloud', () => {
       let useJson = false
       
       if (type === 'pv') {
-        endpoint = '/application/finance/api/engine-payment/payment_search_keyword.php'
+        endpoint = '/finance/api/engine-payment/payment_search_keyword.php'
         docType = ''
         useJson = true
       } else if (type === 'pr') {
-        endpoint = '/application/expense/api/engine-pr/pr_search_keyword.php'
+        endpoint = '/expense/api/engine-pr/pr_search_keyword.php'
       } else if (type === 'po') {
-        endpoint = '/application/expense/api/engine-po/po_search_keyword.php'
+        endpoint = '/expense/api/engine-po/po_search_keyword.php'
       } else if (type === 'ap') {
-        endpoint = '/application/expense/api/engine-expense/expense_search_keyword.php'
+        endpoint = '/expense/api/engine-expense/expense_search_keyword.php'
         docType = 'ap'
       } else if (type === 'expense') {
-        endpoint = '/application/expense/api/engine-expense/expense_search_keyword.php'
+        endpoint = '/expense/api/engine-expense/expense_search_keyword.php'
         docType = ''
       }
 
-      const url = `/trcloud-api${endpoint}`
+      const url = `/api/trcloud${endpoint}`
       let results = []
       let seen = new Set()
       let page = 0
@@ -162,8 +159,7 @@ export const useTrcloudStore = defineStore('trcloud', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
-            'X-Requested-With': 'XMLHttpRequest',
-            ...trcloudProxyExtraHeaders(),
+            'X-Requested-With': 'XMLHttpRequest'
           },
           body: body,
         })
@@ -177,7 +173,6 @@ export const useTrcloudStore = defineStore('trcloud', () => {
           console.log(`Response for PV (page ${page}):`, res)
         }
         
-        // Success check: res.success can be 1 or true. Some APIs return result array directly or in 'data'
         const isSuccess = res.success == 1 || res.success === true || Array.isArray(res.result) || Array.isArray(res.data)
         
         if (!isSuccess) {
@@ -185,7 +180,6 @@ export const useTrcloudStore = defineStore('trcloud', () => {
              console.log(`${type}: End of data reached or no data in range.`)
              break
           }
-          // If we have some results already, don't treat this as a fatal error
           if (results.length > 0) {
             console.warn(`⚠️ Partial fetch for ${type} due to API response:`, res.message)
             break
@@ -198,7 +192,7 @@ export const useTrcloudStore = defineStore('trcloud', () => {
         let items = res.result || res.data || []
         if (!Array.isArray(items)) {
           if (typeof items === 'object' && items !== null) {
-            items = [items] // Wrap single object in array
+            items = [items]
           } else {
             items = []
           }
@@ -208,7 +202,6 @@ export const useTrcloudStore = defineStore('trcloud', () => {
         
         const newItems = []
         for (const it of items) {
-          // Normalize PV fields
           if (type === 'pv') {
             if (!it.issue_date && it.payment_date) it.issue_date = it.payment_date
             if (!it.issue_date && it.date) it.issue_date = it.date
@@ -238,13 +231,11 @@ export const useTrcloudStore = defineStore('trcloud', () => {
 
         if (newItems.length > 0) {
           results.push(...newItems)
-          // Update store progressively so user sees data immediately
           if (type === 'pr') prRows.value = [...results]
           else if (type === 'po') poRows.value = [...results]
           else if (type === 'pv') pvRows.value = [...results]
           else if (type === 'expense') expenseRows.value = [...results]
           else if (type === 'ap') {
-            // AP needs normalization before showing
             const apList = results.map(x => {
               let rawStatus = (x.payment_status || x.status || x.status_payment || '').toString().toLowerCase()
               let status = 'ยังไม่ชำระ'
@@ -263,19 +254,16 @@ export const useTrcloudStore = defineStore('trcloud', () => {
 
         if (total && results.length >= total) break
         page++
-        // Small delay to allow UI to breathe
         await new Promise(resolve => setTimeout(resolve, 10))
-        if (page > 50) break // Reduced from 100 to 50 for better performance
+        if (page > 50) break
       }
 
       typeLastFetchedAt.value[type] = new Date()
       typeLastRange.value[type] = getCurrentRangeKey()
 
-      // After all pages are fetched, do the background AP status check
       if (type === 'ap' && !skipApStatusSync && apRows.value.length > 0) {
         const needsUpdate = apRows.value.filter(ap => ap.payment_status === 'ยังไม่ชำระ')
         if (needsUpdate.length > 0) {
-          // We limit background check to the most recent 30 items to save resources
           const recentNeedsUpdate = needsUpdate.slice(0, 30)
           const updateStatuses = async () => {
             const fetchStatus = async (ap) => {
@@ -283,12 +271,11 @@ export const useTrcloudStore = defineStore('trcloud', () => {
               if (!eid) return
               try {
                 const inner = { company_id: companyId, passkey: passkey, activate_date: 'on', expense_id: eid }
-                const r = await fetch(`/trcloud-api/application/expense/api/engine-expense/invoice-payment.php`, {
+                const r = await fetch(`/api/trcloud/expense/api/engine-expense/invoice-payment.php`, {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    ...trcloudProxyExtraHeaders(),
+                    'X-Requested-With': 'XMLHttpRequest'
                   },
                   body: new URLSearchParams({ json: JSON.stringify(inner) })
                 })
@@ -299,12 +286,11 @@ export const useTrcloudStore = defineStore('trcloud', () => {
                 }
               } catch (e) {}
             }
-            // Fetch in chunks of 10
             for (let i = 0; i < recentNeedsUpdate.length; i += 10) {
               const chunk = recentNeedsUpdate.slice(i, i + 10)
               await Promise.all(chunk.map(ap => fetchStatus(ap)))
-              apRows.value = [...apRows.value] // Update UI
-              await new Promise(resolve => setTimeout(resolve, 100)) // Small delay
+              apRows.value = [...apRows.value]
+              await new Promise(resolve => setTimeout(resolve, 100))
             }
           }
           updateStatuses()
@@ -327,7 +313,6 @@ export const useTrcloudStore = defineStore('trcloud', () => {
     if (loading.value) return
     loading.value = true
     try {
-      // Fetch in parallel to reduce total waiting time.
       await Promise.all([
         fetchTrcloudData('pr', { force, skipApStatusSync }),
         fetchTrcloudData('po', { force, skipApStatusSync }),
