@@ -38,10 +38,13 @@ function clearCache() {
   cachedTimestamp = 0
 }
 
-async function forwardRequest(env, request, path, cookie) {
+async function forwardRequest(env, request, pathStr, cookie) {
   const trcloudBaseUrl = env.TRCLOUD_BASE_URL
   const url = new URL(request.url)
-  const targetUrl = `${trcloudBaseUrl}/${path}${url.search}`
+  const targetURL = `${trcloudBaseUrl}/${pathStr}${url.search}`
+
+  console.log('path received:', pathStr)
+  console.log('targetURL:', targetURL)
 
   const newHeaders = new Headers(request.headers)
   newHeaders.set('Origin', new URL(trcloudBaseUrl).origin)
@@ -53,7 +56,7 @@ async function forwardRequest(env, request, path, cookie) {
     newHeaders.set('Cookie', cookie)
   }
 
-  const modifiedRequest = new Request(targetUrl, {
+  const modifiedRequest = new Request(targetURL, {
     method: request.method,
     headers: newHeaders,
     body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.arrayBuffer() : null,
@@ -96,17 +99,20 @@ export async function onRequest(context) {
       })
     }
 
-    const path = params.path ? params.path.join('/') : ''
+    const pathSegments = params.path
+    const pathStr = Array.isArray(pathSegments)
+      ? pathSegments.join('/')
+      : (pathSegments || '')
 
     let cookie = await getLatestCookie(env)
-    let response = await forwardRequest(env, request, path, cookie)
+    let response = await forwardRequest(env, request, pathStr, cookie)
 
     if (response.ok) {
       const text = await response.text()
       if (text.includes('mismatched')) {
         clearCache()
         cookie = await getLatestCookie(env)
-        response = await forwardRequest(env, request, path, cookie)
+        response = await forwardRequest(env, request, pathStr, cookie)
       } else {
         const newResponse = new Response(text, response)
         newResponse.headers.set('Access-Control-Allow-Origin', '*')
