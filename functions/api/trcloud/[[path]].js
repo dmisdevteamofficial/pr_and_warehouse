@@ -66,21 +66,40 @@ async function forwardRequest(env, request, path, cookie) {
 }
 
 export async function onRequest(context) {
-  const { request, env, params } = context
-
-  if (request.method === 'OPTIONS') {
-    return new Response(null, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      },
-    })
-  }
-
-  const path = params.path ? params.path.join('/') : ''
-
   try {
+    const { request, env, params } = context
+
+    const missing = []
+    if (!env.SUPABASE_URL) missing.push('SUPABASE_URL')
+    if (!env.SUPABASE_ANON_KEY) missing.push('SUPABASE_ANON_KEY')
+    if (!env.TRCLOUD_BASE_URL) missing.push('TRCLOUD_BASE_URL')
+    if (missing.length > 0) {
+      return Response.json(
+        {
+          error: 'Missing env vars',
+          missing
+        },
+        {
+          status: 500,
+          headers: {
+            'Access-Control-Allow-Origin': '*'
+          }
+        }
+      )
+    }
+
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+        },
+      })
+    }
+
+    const path = params.path ? params.path.join('/') : ''
+
     let cookie = await getLatestCookie(env)
     let response = await forwardRequest(env, request, path, cookie)
 
@@ -104,16 +123,19 @@ export async function onRequest(context) {
     newResponse.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     newResponse.headers.set('Access-Control-Allow-Headers', 'Content-Type')
     return newResponse
-  } catch (error) {
-    console.error('TRCloud proxy error:', error)
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+  } catch (err) {
+    return Response.json(
+      {
+        error: err.message,
+        stack: err.stack,
+        type: err.constructor.name
       },
-    })
+      {
+        status: 500,
+        headers: {
+          'Access-Control-Allow-Origin': '*'
+        }
+      }
+    )
   }
 }
