@@ -8,31 +8,29 @@ async function getLatestCookie(env) {
     return cachedCookie
   }
 
-  const supabaseUrl = env.SUPABASE_URL
-  const supabaseKey = env.SUPABASE_ANON_KEY
-
-  const response = await fetch(
-    `${supabaseUrl}/rest/v1/trcloud_session?is_active=eq.true&order=updated_at.desc&limit=1`,
-    {
-      headers: {
-        apikey: supabaseKey,
-        Authorization: `Bearer ${supabaseKey}`,
-      },
+  const url = `${env.SUPABASE_URL}/rest/v1/trcloud_session?is_active=eq.true&order=updated_at.desc&limit=1&select=cookie_value`
+  const res = await fetch(url, {
+    headers: {
+      'apikey': env.SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${env.SUPABASE_ANON_KEY}`,
     }
-  )
+  })
 
-  if (!response.ok) {
-    throw new Error('Failed to fetch cookie from Supabase')
+  const body = await res.text()
+
+  if (!res.ok) {
+    throw new Error(`Supabase error ${res.status}: ${body} | URL used: ${url.substring(0, 80)}`)
   }
 
-  const data = await response.json()
-  if (data.length > 0) {
-    cachedCookie = data[0].cookie_value
-    cachedTimestamp = now
-    return cachedCookie
+  const data = JSON.parse(body)
+
+  if (!data || data.length === 0) {
+    throw new Error(`No cookie found in trcloud_session table. Response: ${body}`)
   }
 
-  return null
+  cachedCookie = data[0].cookie_value
+  cachedTimestamp = now
+  return cachedCookie
 }
 
 function clearCache() {
